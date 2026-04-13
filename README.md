@@ -31,6 +31,10 @@ Choose from multiple themed battlegrounds:
 - **Automatic powerup spawning** (max 5 active at once)
 - **Reconnection support** for dropped connections
 
+### Screenshots
+<img width="1918" height="1078" alt="image" src="https://github.com/user-attachments/assets/1e864143-cb33-4e1f-be4b-72eb7f7ff303" />
+
+
 ## 🚀 Quick Start
 
 ### Prerequisites
