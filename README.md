@@ -135,5 +135,3 @@ const MAX_ACTIVE_POWERUPS = 5; // Max powerups on map
 - Thanks to the Phaser.js and Tiled communities
 
 ---
-
-**Ready to bomb some friends?** 💣 Start the server and share the link!
