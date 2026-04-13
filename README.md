@@ -33,6 +33,7 @@ Choose from multiple themed battlegrounds:
 
 ### Screenshots
 <img width="1918" height="1078" alt="image" src="https://github.com/user-attachments/assets/1e864143-cb33-4e1f-be4b-72eb7f7ff303" />
+---
 <img width="1918" height="1078" alt="image" src="https://github.com/user-attachments/assets/d5388a00-0e3a-4e29-99f4-4171272e55ea" />
 
 ## 🚀 Quick Start
@@ -133,5 +134,3 @@ const MAX_ACTIVE_POWERUPS = 5; // Max powerups on map
 
 - Inspired by the classic Bomberman series and Party Time with Winnie the Pooh
 - Thanks to the Phaser.js and Tiled communities
-
----
