@@ -25,7 +25,6 @@ const MAX_HP = 4;
 const BONUS_CHARGES = 2;
 const RECONNECT_GRACE_MS = 30 * 1000;
 const GAME_TICK_MS = 1000 / 20;
-const ROUND_RESTART_DELAY_MS = 5 * 1000;
 const PORT = Number(process.env.PORT) || 5678;
 
 let currentActivePowerups = 0;
@@ -36,7 +35,6 @@ let map = null;
 let powerupTimer = null;
 let gameLoopTimer = null;
 let gameStarted = false;
-let roundEnding = false;
 const mapCreatedBy = new Set();
 
 const sockets = {};
@@ -115,79 +113,8 @@ function startGameLoop() {
     }, GAME_TICK_MS);
 }
 
-function getAlivePlayers() {
-    return Object.values(players).filter((ply) => ply.health > 0);
-}
-
-function prepareNextRound() {
-    currentActivePowerups = 0;
-    map = null;
-    mapHeight = 0;
-    mapWidth = 0;
-    mapCreatedBy.clear();
-    stopPowerupTimer();
-
-    Object.values(players).forEach((ply) => {
-        ply.health = HP_MAX;
-        ply.x = null;
-        ply.y = null;
-        ply.hasPlantedBomb = false;
-        ply.bonusCharges = 0;
-        ply.speedEffectStamp = Date.now();
-        ply.slowEffectStamp = Date.now();
-        ply.currentDirection = "right";
-    });
-
-    roundEnding = false;
-
-    io.emit("roundRestart", {
-        players,
-        mapName,
-        restartInMs: 0
-    });
-}
-
-function maybeFinishRound() {
-    if (!gameStarted || roundEnding) {
-        return;
-    }
-
-    if (Object.keys(players).length < REQUIRED_PLAYERS) {
-        return;
-    }
-
-    const alivePlayers = getAlivePlayers();
-    if (alivePlayers.length > 1) {
-        return;
-    }
-
-    roundEnding = true;
-
-    const winner = alivePlayers.length === 1 ? alivePlayers[0] : null;
-    io.emit("roundEnded", {
-        winnerId: winner?.id || null,
-        winnerNick: winner?.nick || null,
-        restartInMs: ROUND_RESTART_DELAY_MS
-    });
-
-    setTimeout(() => {
-        if (!gameStarted) {
-            roundEnding = false;
-            return;
-        }
-
-        if (Object.keys(players).length < REQUIRED_PLAYERS) {
-            roundEnding = false;
-            return;
-        }
-
-        prepareNextRound();
-    }, ROUND_RESTART_DELAY_MS);
-}
-
 function resetGameState() {
     gameStarted = false;
-    roundEnding = false;
     currentActivePowerups = 0;
     mapName = "";
     mapHeight = 0;
@@ -217,10 +144,7 @@ function removePlayer(playerId) {
 
     if (Object.keys(players).length === 0) {
         resetGameState();
-        return;
     }
-
-    maybeFinishRound();
 }
 
 function startMatchIfReady() {
@@ -249,7 +173,6 @@ function startMatchIfReady() {
     });
 
     gameStarted = true;
-    roundEnding = false;
     mapCreatedBy.clear();
     currentActivePowerups = 0;
     map = null;
@@ -379,10 +302,6 @@ io.on("connection", (socket) => {
     });
 
     socket.on("pickedPowerup", (data) => {
-        if (roundEnding) {
-            return;
-        }
-
         const { id, x, y, type } = data;
 
         if (!players[id] || !map || !map[y] || !map[y][x] || !map[y][x].powerup) {
@@ -418,10 +337,6 @@ io.on("connection", (socket) => {
     });
 
     socket.on("moved", (data) => {
-        if (roundEnding) {
-            return;
-        }
-
         if (!players[data.id] || data.id !== playerId) {
             return;
         }
@@ -457,7 +372,7 @@ io.on("connection", (socket) => {
     });
 
     socket.on("plantBomb", (ply) => {
-        if (roundEnding || !map || !players[ply.id] || ply.id !== playerId) {
+        if (!map || !players[ply.id] || ply.id !== playerId) {
             return;
         }
 
@@ -495,10 +410,6 @@ io.on("connection", (socket) => {
         };
 
         const detonateBomb = (row, col, bomb) => {
-            if (!map || !map[row] || !map[row][col] || map[row][col].bomb !== bomb) {
-                return;
-            }
-
             const playersHit = [];
             const affectedArea = Array.from({ length: mapHeight }, () =>
                 Array.from({ length: mapWidth }, () => false)
@@ -551,7 +462,7 @@ io.on("connection", (socket) => {
             const uniqueHit = new Set(playersHit);
             uniqueHit.forEach((p_id) => {
                 if (players[p_id]) {
-                    players[p_id].health = Math.max(players[p_id].health - 1, 0);
+                    players[p_id].health--;
                 }
             });
 
@@ -564,7 +475,6 @@ io.on("connection", (socket) => {
 
             io.emit("update", players);
             io.emit("explosionDetails", affectedArea, map);
-            maybeFinishRound();
         };
 
         const isOnCooldown = () => {
