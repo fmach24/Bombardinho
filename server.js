@@ -3,66 +3,45 @@ import http from "http";
 import { Server } from "socket.io";
 import { v4 as uuidv4 } from "uuid";
 
-
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
 app.use(express.static("public"));
+app.get("/health", (_req, res) => {
+    res.status(200).json({ status: "ok" });
+});
 
-//na razie const ilosc rgaczy do odpalenia gry
 const REQUIRED_PLAYERS = 2;
+const MAX_PLAYERS = 4;
 const DETONATION_TIME = 2.5 * 1000;
 const STANDARD_RANGE = 2;
-const BUFFED_RANGE = 4;
 const HP_MAX = 3;
 const MAX_ACTIVE_POWERUPS = 5;
 const SPEED_DURATION = 7.5 * 1000;
 const SLOW_DURATION = 10 * 1000;
 const MAX_CHARGES = 4;
-const MAX_HP =4;
+const MAX_HP = 4;
 const BONUS_CHARGES = 2;
+const RECONNECT_GRACE_MS = 30 * 1000;
+const GAME_TICK_MS = 1000 / 20;
+const PORT = Number(process.env.PORT) || 5678;
+
 let currentActivePowerups = 0;
 let mapName = "";
 let mapHeight = 0;
 let mapWidth = 0;
 let map = null;
-let mapCreatedCount = 0; // Licznik graczy którzy wysłali mapCreated
-let powerupTimer = null; // Referencja do timera powerupów
+let powerupTimer = null;
+let gameLoopTimer = null;
+let gameStarted = false;
+const mapCreatedBy = new Set();
 
-
-//to nie jest na razie uzyteczne ale jakbysmy chcieli zablokowac pojawianie sie powerupoow to zostawiam
-// let powerupTimerStarted = false; // Flaga czy timer powerupów już został uruchomiony
-
-//Tu info o pozycji, o hp, o powerupach.
 const sockets = {};
-const mapPreferences = {}; // Preferencje map od graczy
+const sessions = {};
+const disconnectTimers = {};
+const mapPreferences = {};
 const players = {};
-
-
-
-
-//!!!!!!!!!!! TODO: nie przydziela na podczatku graczowi xy, wiec bomba nie wybucha na nim, dopiero gdy sie ruszy
-
-
-// //tworzenie mapy (przenienione do GameScene.js)
-// const map = Array.from({ length: mapHeight }, () =>
-//     Array.from({ length: mapWidth }, () => ({ bomb: null, powerup: false, wall: false }))
-// );
-
-// for (let i = 0; i < mapHeight; i++) {
-//     map[i][0].wall = true;
-//     map[i][mapWidth - 1].wall = true;
-// }
-// for (let i = 0; i < mapWidth; i++) {
-//     map[0][i].wall = true;
-//     map[mapHeight - 1][i].wall = true;
-// }
-// // console.log("Map:", map);
-
-
-
-
 
 function snapToGrid(value, gridSize) {
     return Math.floor(value / gridSize) * gridSize;
@@ -72,262 +51,377 @@ function toMapIndex(value, gridSize) {
     return value / gridSize;
 }
 
-io.on("connection", (socket) => {
+function getConnectedPlayerIds() {
+    return [...new Set(Object.values(sockets).map((state) => state.id))];
+}
 
-    let playerId = null;
+function stopPowerupTimer() {
+    if (!powerupTimer) {
+        return;
+    }
 
-    socket.on("registerPlayer", (data) => {
+    clearInterval(powerupTimer);
+    powerupTimer = null;
+}
 
-        // playerId = Object.keys(sockets).length + 1;
-        playerId = uuidv4();
+function ensurePowerupTimer() {
+    if (powerupTimer || !map) {
+        return;
+    }
 
-        sockets[socket.id] = {
-            nick: data.nick,
-            id: playerId
-        };
-
-        players[playerId] = {
-            nick: data.nick,
-            id: playerId,
-            spawn: "",
-            skin: data.playerSkin,
-            health: HP_MAX,
-            x: null,
-            y: null,
-            hasPlantedBomb: false,
-            bonusCharges: 0,
-            powerups: [false, false, false], // przykładowe powerupy
-            speedEffectStamp: Date.now(),
-            slowEffectStamp: Date.now(),
-            currentDirection: "right" // nowa właściwość do przechowywania kierunku ruchu
-        };
-
-
-        // Zapisz preferencję mapy
-        if (data.preferredMap) {
-            mapPreferences[playerId] = data.preferredMap;
+    powerupTimer = setInterval(() => {
+        if (!gameStarted || !map || Object.keys(players).length === 0) {
+            stopPowerupTimer();
+            return;
         }
 
+        if (currentActivePowerups >= MAX_ACTIVE_POWERUPS) {
+            return;
+        }
 
-        //TODO: gdy gra sie zacznie i osobna wyjdzie z gry i dolaczy znowu, to zacznie nowa gre wtedy, moze zrobic tak, że sockets beda usuwane po rozpoczaciu gry?
-        //gdy jest 4 graczy
-        if (Object.keys(sockets).length === REQUIRED_PLAYERS) {
-            // Losuj mapę z preferencji graczy
-            const availableMaps = Object.values(mapPreferences);
-            if (availableMaps.length > 0) {
-                const randomIndex = Math.floor(Math.random() * availableMaps.length);
-                mapName = availableMaps[randomIndex];
-            } else {
-                mapName = "beach"; // Fallback jeśli brak preferencji
+        const maxAttempts = mapHeight * mapWidth;
+        let attempts = 0;
+
+        while (attempts < maxAttempts) {
+            const x = Math.floor(Math.random() * mapWidth);
+            const y = Math.floor(Math.random() * mapHeight);
+            const type = Math.floor(Math.random() * 4);
+
+            if (!map[y][x].wall && !map[y][x].bomb && !map[y][x].powerup) {
+                map[y][x].powerup = true;
+                currentActivePowerups++;
+                io.emit("spawnPowerup", { x, y, type });
+                break;
             }
 
+            attempts++;
+        }
+    }, 5000);
+}
 
+function startGameLoop() {
+    if (gameLoopTimer) {
+        return;
+    }
 
-            //tmp assign some start positions.
-            let i = 1;
-            for (const key of Object.keys(players)) {
-                players[key].spawn = 'spawn' + i;
-                i++;
-            }
+    gameLoopTimer = setInterval(() => {
+        if (!gameStarted || Object.keys(players).length === 0) {
+            return;
+        }
 
-            io.emit("startGame", sockets, players, mapName); // wyślij sygnał do wszystkich, że gra się zaczyna
+        io.emit("update", players);
+    }, GAME_TICK_MS);
+}
+
+function resetGameState() {
+    gameStarted = false;
+    currentActivePowerups = 0;
+    mapName = "";
+    mapHeight = 0;
+    mapWidth = 0;
+    map = null;
+    mapCreatedBy.clear();
+    stopPowerupTimer();
+}
+
+function removePlayer(playerId) {
+    delete players[playerId];
+    delete mapPreferences[playerId];
+
+    Object.keys(sessions).forEach((sessionId) => {
+        if (sessions[sessionId] === playerId) {
+            delete sessions[sessionId];
         }
     });
 
-    //na razie to jest tak że od kazdego gracza server dostaje mapCrated
-    socket.on('mapCreated', (data) => {
-        mapCreatedCount++; // Zwiększ licznik
-        console.log(`mapCreated otrzymane od gracza ${mapCreatedCount}/${REQUIRED_PLAYERS}`);
-        // Uruchom timer powerupów dopiero gdy wszyscy gracze wyślą mapCreated
-        if (mapCreatedCount === REQUIRED_PLAYERS) {// && !powerupTimerStarted) {
-            // powerupTimerStarted = true;
+    if (disconnectTimers[playerId]) {
+        clearTimeout(disconnectTimers[playerId]);
+        delete disconnectTimers[playerId];
+    }
 
-            console.log("Wszyscy gracze wysłali mapCreated - uruchamiam timer powerupów");
+    io.emit("playerRemoved", { id: playerId });
+    io.emit("update", players);
 
+    if (Object.keys(players).length === 0) {
+        resetGameState();
+    }
+}
+
+function startMatchIfReady() {
+    if (gameStarted) {
+        return;
+    }
+
+    const connectedPlayerIds = getConnectedPlayerIds();
+    if (connectedPlayerIds.length < REQUIRED_PLAYERS) {
+        return;
+    }
+
+    const availableMaps = connectedPlayerIds
+        .map((id) => mapPreferences[id])
+        .filter(Boolean);
+
+    if (availableMaps.length > 0) {
+        const randomIndex = Math.floor(Math.random() * availableMaps.length);
+        mapName = availableMaps[randomIndex];
+    } else {
+        mapName = "beach";
+    }
+
+    connectedPlayerIds.slice(0, MAX_PLAYERS).forEach((id, index) => {
+        players[id].spawn = `spawn${index + 1}`;
+    });
+
+    gameStarted = true;
+    mapCreatedBy.clear();
+    currentActivePowerups = 0;
+    map = null;
+    mapHeight = 0;
+    mapWidth = 0;
+
+    io.emit("startGame", {
+        sockets,
+        players,
+        mapName,
+        isRejoin: false
+    });
+
+    startGameLoop();
+}
+
+io.on("connection", (socket) => {
+    let playerId = null;
+
+    socket.on("registerPlayer", (data = {}) => {
+        const nick = (data.nick || "Gracz").trim().slice(0, 16);
+        const preferredMap = data.preferredMap || "beach";
+        const playerSkin = data.playerSkin || "bombardinho";
+        const tryReconnect = Boolean(data.tryReconnect);
+        const requestedSessionId = typeof data.sessionId === "string" ? data.sessionId : null;
+
+        let sessionId = requestedSessionId;
+        let reconnected = false;
+
+        if (sessionId && sessions[sessionId] && players[sessions[sessionId]]) {
+            playerId = sessions[sessionId];
+            reconnected = true;
+        } else if (tryReconnect) {
+            socket.emit("reconnectFailed", { reason: "Session expired" });
+            return;
+        } else {
+            if (Object.keys(players).length >= MAX_PLAYERS) {
+                socket.emit("registrationRejected", {
+                    reason: `Lobby is full (${MAX_PLAYERS} players max)`
+                });
+                return;
+            }
+
+            playerId = uuidv4();
+            sessionId = uuidv4();
+            sessions[sessionId] = playerId;
+
+            players[playerId] = {
+                nick,
+                id: playerId,
+                spawn: "",
+                skin: playerSkin,
+                health: HP_MAX,
+                x: null,
+                y: null,
+                hasPlantedBomb: false,
+                bonusCharges: 0,
+                speedEffectStamp: Date.now(),
+                slowEffectStamp: Date.now(),
+                currentDirection: "right"
+            };
+
+            mapPreferences[playerId] = preferredMap;
+        }
+
+        if (!players[playerId]) {
+            socket.emit("reconnectFailed", { reason: "Player state not found" });
+            return;
+        }
+
+        if (!(reconnected && tryReconnect)) {
+            players[playerId].nick = nick || players[playerId].nick;
+            players[playerId].skin = playerSkin || players[playerId].skin;
+            mapPreferences[playerId] = preferredMap;
+        } else if (!mapPreferences[playerId]) {
+            mapPreferences[playerId] = preferredMap;
+        }
+
+        if (disconnectTimers[playerId]) {
+            clearTimeout(disconnectTimers[playerId]);
+            delete disconnectTimers[playerId];
+        }
+
+        sockets[socket.id] = {
+            nick: players[playerId].nick,
+            id: playerId,
+            sessionId
+        };
+
+        socket.emit("sessionAssigned", {
+            sessionId,
+            playerId,
+            reconnected
+        });
+
+        if (gameStarted) {
+            socket.emit("startGame", {
+                sockets,
+                players,
+                mapName,
+                isRejoin: true
+            });
+            io.emit("update", players);
+            return;
+        }
+
+        startMatchIfReady();
+    });
+
+    socket.on("mapCreated", (data) => {
+        if (!gameStarted || map || !data?.mapArray || !Array.isArray(data.mapArray)) {
+            return;
+        }
+
+        const socketState = sockets[socket.id];
+        if (!socketState || mapCreatedBy.has(socketState.id)) {
+            return;
+        }
+
+        mapCreatedBy.add(socketState.id);
+        if (mapCreatedBy.size >= REQUIRED_PLAYERS) {
             mapHeight = data.mapArray.length;
             mapWidth = data.mapArray[0].length;
             map = data.mapArray;
-
-            //obsluga powerupow
-            powerupTimer = setInterval(() => {
-
-                // gdy nie ma graczy zatrzymaj timer
-                if (Object.keys(players).length === 0) {
-                    console.log("Brak graczy - zatrzymuję timer powerupów");
-                    clearInterval(powerupTimer);
-                    powerupTimer = null;
-                    return;
-                }
-
-                if (currentActivePowerups >= MAX_ACTIVE_POWERUPS)
-                    return;
-
-                // Wybierz losowe współrzędne na podstawie rzeczywistych wymiarów
-                while (true) {
-                    const x = Math.floor(Math.random() * mapWidth);
-                    const y = Math.floor(Math.random() * mapHeight);
-                    const type = Math.floor(Math.random() * 4);
-
-                    if (!map[y][x].wall && !map[y][x].bomb && !map[y][x].powerup) {
-                        map[y][x].powerup = true;
-                        currentActivePowerups++;
-                        io.emit('spawnPowerup', { x, y, type: type });
-                        break;
-                    } 
-
-                }
-            }, 5000); // co 10 sekund
+            ensurePowerupTimer();
         }
     });
 
-    //TODO: dokonczyc obsluge powerupow
-    //obsługa zebrania powerupa
-    socket.on('pickedPowerup', (data) => {
-        //server wie jaki gracz ma powerup
+    socket.on("pickedPowerup", (data) => {
         const { id, x, y, type } = data;
 
-        //can be buggy
-        if (!map[y][x].powerup) return;
+        if (!players[id] || !map || !map[y] || !map[y][x] || !map[y][x].powerup) {
+            return;
+        }
 
         map[y][x].powerup = false;
 
         switch (type) {
-            //speed
             case 0:
-                players[id].powerups[type] = true; // przyznaj powerup graczowi
                 players[id].speedEffectStamp = Date.now() + SPEED_DURATION;
                 break;
-
-            //slow
             case 1:
-                Object.values(players).forEach(ply => {
-                    //give everyone else the slow!
-                    if (ply.id != id) {
-                        ply.powerups[type] = true; // przyznaj powerup graczowi
+                Object.values(players).forEach((ply) => {
+                    if (ply.id !== id) {
                         ply.slowEffectStamp = Date.now() + SLOW_DURATION;
                     }
                 });
-
                 break;
-
-            //bonus charges:
             case 2:
-                players[id].powerups[type] = true;
                 players[id].bonusCharges = Math.min(players[id].bonusCharges + BONUS_CHARGES, MAX_CHARGES);
                 break;
-
-            //HP
             case 3:
-                players[id].powerups[type] = true;
                 players[id].health = Math.min(players[id].health + 1, MAX_HP);
                 break;
+            default:
+                return;
         }
-        currentActivePowerups--;
-        io.emit('update', players);
-        io.emit('destroyPowerup', { x, y });
+
+        currentActivePowerups = Math.max(currentActivePowerups - 1, 0);
+        io.emit("update", players);
+        io.emit("destroyPowerup", { x, y });
     });
 
-
-    socket.on('moved', (data) => {
-
-        //When game is inproperly started it crushes the server thats what the null check is for
-        if (!players[data.id])
+    socket.on("moved", (data) => {
+        if (!players[data.id] || data.id !== playerId) {
             return;
-        players[data.id].x = data.x
-        players[data.id].y = data.y
-        players[data.id].currentDirection = data.direction; // aktualizuj kierunek ruchu
-
-
-        io.emit('update', players)
-    })
-
-
-
-    //TODO: naprawic usuwanie graczy i zmienic zeby po uuid bylo (maybe sesja pozniej), do tego sensownie playerid trzymac i uzywac
-    socket.on("disconnect", () => {
-        delete sockets[socket.id];
-        delete mapPreferences[playerId];
-        mapCreatedCount = 0; // Zresetuj licznik
-
-        // Jeśli nie ma już graczy, zatrzymaj timer powerupów
-        if (Object.keys(players).length === 0 && powerupTimer) {
-            console.log("Ostatni gracz się rozłączył - zatrzymuję timer powerupów");
-            clearInterval(powerupTimer);
-            powerupTimer = null;
         }
 
-        console.log("User disconnected:", socket.id);
-        console.log("Current sockets:", sockets);
+        players[data.id].x = data.x;
+        players[data.id].y = data.y;
+        players[data.id].currentDirection = data.direction;
     });
 
+    socket.on("disconnect", () => {
+        const disconnectedSocket = sockets[socket.id];
+        if (!disconnectedSocket) {
+            return;
+        }
 
+        delete sockets[socket.id];
+        const disconnectedPlayerId = disconnectedSocket.id;
 
+        if (disconnectTimers[disconnectedPlayerId]) {
+            clearTimeout(disconnectTimers[disconnectedPlayerId]);
+        }
 
+        disconnectTimers[disconnectedPlayerId] = setTimeout(() => {
+            const playerStillConnected = getConnectedPlayerIds().includes(disconnectedPlayerId);
+            if (!playerStillConnected) {
+                removePlayer(disconnectedPlayerId);
+            }
+        }, RECONNECT_GRACE_MS);
 
+        if (Object.keys(sockets).length === 0) {
+            stopPowerupTimer();
+        }
+    });
 
     socket.on("plantBomb", (ply) => {
+        if (!map || !players[ply.id] || ply.id !== playerId) {
+            return;
+        }
 
-        //START HELPES:
-        
-        const checkIfPlayerHit = (bomb, y, x) => {
-            
-            let result = [];
-            Object.values(players).forEach(p => {
-                //tu trzeba patrzec na tablice na Miro gdzie to wypisalem co co robi.
-                // Player is a 64x64 box centered at p.x, p.y
+        const checkIfPlayerHit = (y, x) => {
+            const result = [];
+
+            Object.values(players).forEach((p) => {
+                if (p.x == null || p.y == null || p.health <= 0) {
+                    return;
+                }
+
                 const playerHalf = 32;
                 const playerLeft = p.x - playerHalf;
                 const playerRight = p.x + playerHalf;
-                const playerTop = p.y - playerHalf;    // Y maleje w górę
-                const playerBottom = p.y + playerHalf; // Y rośnie w dół
-
+                const playerTop = p.y - playerHalf;
+                const playerBottom = p.y + playerHalf;
 
                 const bombSize = 64;
-                const bombX_top = x * bombSize
-                const bombY_top = y * bombSize;
-
-
                 const bombLeft = x * bombSize;
                 const bombRight = bombLeft + bombSize;
                 const bombTop = y * bombSize;
                 const bombBottom = bombTop + bombSize;
 
-
-              
-
-                if (playerRight > bombLeft &&
+                if (
+                    playerRight > bombLeft &&
                     playerLeft < bombRight &&
                     playerBottom > bombTop &&
-                    playerTop < bombBottom) {
-                    
+                    playerTop < bombBottom
+                ) {
                     result.push(p.id);
-                    
                 }
-               
             });
+
             return result;
         };
 
-
         const detonateBomb = (row, col, bomb) => {
-            // console.log("Detonating bomb at:", row, col, bomb);
-            // console.log("Map dimensions:", mapHeight, mapWidth);
-            // console.log("Map state:", map);
-
-            let playersHit = [];
-
-            const affectedArea = Array.from({ length: 20 }, () =>
-                Array.from({ length: 20 }, () => false)
+            const playersHit = [];
+            const affectedArea = Array.from({ length: mapHeight }, () =>
+                Array.from({ length: mapWidth }, () => false)
             );
 
-            
             let offset = -1;
             while (
                 Math.abs(offset) <= bomb.range &&
                 col + offset >= 0 &&
                 !map[row][col + offset].wall
             ) {
-                playersHit.push(...checkIfPlayerHit(bomb, row, col + offset));
+                playersHit.push(...checkIfPlayerHit(row, col + offset));
                 affectedArea[row][col + offset] = true;
                 offset--;
             }
@@ -338,11 +432,10 @@ io.on("connection", (socket) => {
                 col + offset < mapWidth &&
                 !map[row][col + offset].wall
             ) {
-                playersHit.push(...checkIfPlayerHit(bomb, row, col + offset));
+                playersHit.push(...checkIfPlayerHit(row, col + offset));
                 affectedArea[row][col + offset] = true;
                 offset++;
             }
-
 
             offset = 1;
             while (
@@ -350,7 +443,7 @@ io.on("connection", (socket) => {
                 row + offset < mapHeight &&
                 !map[row + offset][col].wall
             ) {
-                playersHit.push(...checkIfPlayerHit(bomb, row + offset, col));
+                playersHit.push(...checkIfPlayerHit(row + offset, col));
                 affectedArea[row + offset][col] = true;
                 offset++;
             }
@@ -361,57 +454,61 @@ io.on("connection", (socket) => {
                 row + offset >= 0 &&
                 !map[row + offset][col].wall
             ) {
-                playersHit.push(...checkIfPlayerHit(bomb, row + offset, col));
+                playersHit.push(...checkIfPlayerHit(row + offset, col));
                 affectedArea[row + offset][col] = true;
                 offset--;
             }
 
-    
             const uniqueHit = new Set(playersHit);
-            uniqueHit.forEach(p_id => {
-                players[p_id].health--;
+            uniqueHit.forEach((p_id) => {
+                if (players[p_id]) {
+                    players[p_id].health--;
+                }
             });
 
-        
             map[row][col].bomb = null;
-            players[bomb.id].hasPlantedBomb = false;
+            if (players[bomb.id]) {
+                players[bomb.id].hasPlantedBomb = false;
+            }
 
             affectedArea[row][col] = true;
 
-            socket.emit("update", players);
-            socket.emit("explosionDetails", affectedArea, map);
+            io.emit("update", players);
+            io.emit("explosionDetails", affectedArea, map);
         };
 
-
-        const isOnCooldown = (ply) => {
-
+        const isOnCooldown = () => {
             return players[ply.id].bonusCharges > 0 ? false : players[ply.id].hasPlantedBomb;
-        }
-        const getRangeFor = (ply) => {
+        };
+
+        const getRangeFor = () => {
             return STANDARD_RANGE;
-        }
-
-
-        //END HELPERS
-
+        };
 
         const bombX = snapToGrid(ply.x, 64);
         const bombY = snapToGrid(ply.y, 64);
 
-        const gridX = Math.floor(bombX / 64);
-        const gridY = Math.floor(bombY / 64);
+        const gridX = toMapIndex(bombX, 64);
+        const gridY = toMapIndex(bombY, 64);
 
-        if (!isOnCooldown(ply)
-            && map[gridY][gridX].bomb == null) {
+        if (gridY < 0 || gridY >= mapHeight || gridX < 0 || gridX >= mapWidth) {
+            return;
+        }
 
-            const bomb = { range: getRangeFor(ply), id: ply.id, timeout: DETONATION_TIME, x: bombX, y: bombY };
+        if (!isOnCooldown() && map[gridY][gridX].bomb == null) {
+            const bomb = {
+                range: getRangeFor(),
+                id: ply.id,
+                timeout: DETONATION_TIME,
+                x: bombX,
+                y: bombY
+            };
+
             map[gridY][gridX].bomb = bomb;
-            
 
             if (players[ply.id].bonusCharges > 0) {
                 players[ply.id].bonusCharges--;
-            }
-            else{
+            } else {
                 players[ply.id].hasPlantedBomb = true;
             }
 
@@ -421,16 +518,9 @@ io.on("connection", (socket) => {
 
             io.emit("newBomb", bomb);
         }
-
-    })
+    });
 });
 
-
-
-// server.listen(3000, () => {
-//     console.log("Server listening on http://localhost:3000");
-// });
-
-server.listen(5678, '0.0.0.0', () => {
-  console.log("Server listening on http://0.0.0.0:5678");
+server.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server listening on http://0.0.0.0:${PORT}`);
 });

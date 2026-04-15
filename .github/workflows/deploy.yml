@@ -5,11 +5,16 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: ecs-deploy-main
+  cancel-in-progress: false
+
 env:
   AWS_REGION:       ${{ secrets.AWS_REGION }}
   ECR_REPO:         ${{ secrets.ECR_REPOSITORY_URL }}
   ECS_CLUSTER:      ${{ secrets.ECS_CLUSTER_NAME }}
   ECS_SERVICE:      ${{ secrets.ECS_SERVICE_NAME }}
+  ECS_TASK_FAMILY:  ${{ secrets.ECS_TASK_FAMILY || 'bombardinho' }}
 
 jobs:
   lint:
@@ -55,7 +60,7 @@ jobs:
 
       - name: Download task definition
         run: |
-          aws ecs describe-task-definition --task-definition bombardinho --query taskDefinition > task-definition.json
+          aws ecs describe-task-definition --task-definition "${{ env.ECS_TASK_FAMILY }}" --query taskDefinition > task-definition.json
 
       - name: Fill in the new image ID
         id: task-def

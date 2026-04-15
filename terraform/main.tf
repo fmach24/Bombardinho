@@ -172,6 +172,19 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+resource "aws_iam_role" "ecs_task" {
+  name = "${var.app_name}-task-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "ecs-tasks.amazonaws.com" }
+    }]
+  })
+}
+
 # ─── ECS Cluster ──────────────────────────────────────────────────────────────
 resource "aws_ecs_cluster" "main" {
   name = "${var.app_name}-cluster"
@@ -189,9 +202,10 @@ resource "aws_ecs_task_definition" "app" {
   family                   = var.app_name
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
-  cpu                      = "256"  # 0.25 vCPU
+  cpu                      = "256" # 0.25 vCPU
   memory                   = "512"
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
 
   container_definitions = jsonencode([{
     name      = var.app_name
@@ -218,7 +232,7 @@ resource "aws_ecs_task_definition" "app" {
     }
 
     healthCheck = {
-      command     = ["CMD-SHELL", "wget -qO- http://localhost:${var.app_port}/ || exit 1"]
+      command     = ["CMD-SHELL", "wget -qO- http://localhost:${var.app_port}/health || exit 1"]
       interval    = 30
       timeout     = 5
       retries     = 3
@@ -247,7 +261,7 @@ resource "aws_lb_target_group" "app" {
   target_type = "ip"
 
   health_check {
-    path                = "/"
+    path                = "/health"
     protocol            = "HTTP"
     healthy_threshold   = 2
     unhealthy_threshold = 3
@@ -279,11 +293,13 @@ resource "aws_lb_listener" "http" {
 
 # ─── ECS Service ──────────────────────────────────────────────────────────────
 resource "aws_ecs_service" "app" {
-  name            = "${var.app_name}-service"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.app.arn
-  desired_count   = var.desired_count
-  launch_type     = "FARGATE"
+  name                               = "${var.app_name}-service"
+  cluster                            = aws_ecs_cluster.main.id
+  task_definition                    = aws_ecs_task_definition.app.arn
+  desired_count                      = var.desired_count
+  launch_type                        = "FARGATE"
+  deployment_minimum_healthy_percent = 100
+  deployment_maximum_percent         = 200
 
   # Allow Fargate Spot for cost savings (optional)
   # capacity_provider_strategy {

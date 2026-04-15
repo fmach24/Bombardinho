@@ -47,13 +47,6 @@ export default class LobbyScene extends Phaser.Scene {
     }
 
     create() {
-
-        const revivedData = localStorage.getItem("reconnectionData");
-        if(revivedData!= null && this.TRY_RECONNECT_RECONNECT){
-            this.scene.start('GameScene', {reconnect:true, socket:socket});
-            return;
-        }
-
         // Czarne tło
         this.add.rectangle(400, 300, 800, 600, 0x0b0b0b);
 
@@ -216,6 +209,7 @@ export default class LobbyScene extends Phaser.Scene {
             const nick = this.inputNick.node.value.trim() || 'Gracz';
             const preferredMap = this.maps[this.currentMapIndex].name;
             const playerSkin = this.playerSkins[this.currentSkinIndex].name;
+            const sessionId = localStorage.getItem('sessionId');
 
             // Zablokuj kontrolki
             this.inputNick.node.disabled = true;
@@ -227,19 +221,120 @@ export default class LobbyScene extends Phaser.Scene {
             this.prevSkinButton.removeInteractive();
             this.nextSkinButton.removeInteractive();
 
-            socket.emit("registerPlayer", { nick, preferredMap, playerSkin });
+            socket.emit("registerPlayer", {
+                nick,
+                preferredMap,
+                playerSkin,
+                sessionId,
+                tryReconnect: false
+            });
         });
 
         // Inicjalizuj wybór mapy i skina
         this.updateMapDisplay();
         this.updateSkinDisplay();
 
-        socket.on("startGame", (sockets, players, mapName) => {
-            const playerId = sockets[socket.id].id;
-            const gameData = { players: players, playerId: playerId, socket: socket, mapName: mapName, reconnect:false };
+        socket.off("sessionAssigned");
+        socket.off("registrationRejected");
+        socket.off("reconnectFailed");
+        socket.off("startGame");
+
+        socket.on("sessionAssigned", ({ sessionId }) => {
+            if (sessionId) {
+                localStorage.setItem("sessionId", sessionId);
+            }
+        });
+
+        socket.on("registrationRejected", ({ reason }) => {
+            alert(reason || "Cannot join game lobby.");
+            this.enableLobbyControls();
+        });
+
+        socket.on("reconnectFailed", ({ reason }) => {
+            localStorage.removeItem("sessionId");
+            alert(reason || "Reconnection failed. Join again.");
+            this.enableLobbyControls();
+        });
+
+        socket.on("startGame", (payload, legacyPlayers, legacyMapName) => {
+            const normalizedPayload = payload?.players
+                ? payload
+                : {
+                    sockets: payload,
+                    players: legacyPlayers,
+                    mapName: legacyMapName,
+                    isRejoin: false
+                };
+
+            const currentSocketState = normalizedPayload.sockets?.[socket.id];
+            if (!currentSocketState) {
+                return;
+            }
+
+            const playerId = currentSocketState.id;
+            const gameData = {
+                players: normalizedPayload.players,
+                playerId,
+                socket,
+                mapName: normalizedPayload.mapName,
+                reconnect: Boolean(normalizedPayload.isRejoin)
+            };
+
             localStorage.setItem("playerId", playerId);
+
+            if (normalizedPayload.isRejoin) {
+                this.scene.start("GameScene", gameData);
+                return;
+            }
+
             this.startCountdown(gameData);
         });
+
+        const storedSessionId = localStorage.getItem("sessionId");
+        if (storedSessionId && this.TRY_RECONNECT) {
+            this.disableLobbyControls("Reconnecting...");
+            socket.emit("registerPlayer", {
+                nick: "Reconnecting",
+                preferredMap: this.maps[this.currentMapIndex].name,
+                playerSkin: this.playerSkins[this.currentSkinIndex].name,
+                sessionId: storedSessionId,
+                tryReconnect: true
+            });
+        }
+    }
+
+    disableLobbyControls(buttonText = "Waiting...") {
+        if (this.inputNick?.node) {
+            this.inputNick.node.disabled = true;
+        }
+
+        if (this.startButton) {
+            this.startButton.setText(buttonText);
+            this.startButton.setStyle({ backgroundColor: '#666666' });
+            this.startButton.removeInteractive();
+        }
+
+        this.prevMapButton?.removeInteractive();
+        this.nextMapButton?.removeInteractive();
+        this.prevSkinButton?.removeInteractive();
+        this.nextSkinButton?.removeInteractive();
+    }
+
+    enableLobbyControls() {
+        if (this.inputNick?.node) {
+            this.inputNick.node.disabled = false;
+        }
+
+        if (this.startButton) {
+            this.startButton.setText('Join game');
+            this.startButton.setStyle({ backgroundColor: '#ffffff' });
+            this.startButton.setInteractive({ useHandCursor: true });
+        }
+
+        this.prevMapButton?.setInteractive({ useHandCursor: true });
+        this.nextMapButton?.setInteractive({ useHandCursor: true });
+        this.prevSkinButton?.setInteractive({ useHandCursor: true });
+        this.nextSkinButton?.setInteractive({ useHandCursor: true });
     }
 
     startCountdown(gameData) {

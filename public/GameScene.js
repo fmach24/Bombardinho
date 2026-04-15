@@ -1,7 +1,6 @@
 export default class GameScene extends Phaser.Scene {
 
     HP_BAR_TAG = "hp_bar";
-    TRY_RECONNECT = false;
     constructor() {
         super("GameScene");
 
@@ -11,6 +10,7 @@ export default class GameScene extends Phaser.Scene {
 
         this.load.font('jersey', 'assets/fonts/jersey10.ttf');
         //mapy
+        
         this.load.tilemapTiledJSON("beachMap", "assets/beachMap.tmj");
         this.load.image("beachTiles", "assets/beachTiles.png");
         this.load.image("grave", "assets/animations/grave.png");
@@ -109,19 +109,7 @@ export default class GameScene extends Phaser.Scene {
 
     //start scene -> create
     create(data) {
-
-
-        if (data.reconnect && this.TRY_RECONNECT) {
-            const revivedData = JSON.parse(localStorage.getItem("reconnectionData"));
-            revivedData.reconnect = true;
-            this.initializeGame(revivedData, data.socket)
-            console.log(revivedData);
-
-        }
-        else {
-            localStorage.setItem("reconnectionData", null);
-            this.initializeGame(data, data.socket);
-        }
+        this.initializeGame(data, data.socket);
     }
 
     initializeGame(data, socket) {
@@ -521,10 +509,6 @@ export default class GameScene extends Phaser.Scene {
             player.health = ply.health;
             if (ply.id == this.playerId) {
                 this.player = player;
-                if (data.reconnect) {
-                    this.player.x = data.x
-                    this.player.y = data.y
-                }
             }
 
             // player.spriteBody.play(ply.currentDirection + '_down1', true);
@@ -740,6 +724,7 @@ export default class GameScene extends Phaser.Scene {
                 const hasSlowEffect = ply.slowEffectStamp >= Date.now();
                 //jesli to jest nasz gracz
                 if (ply.id == this.playerId) {
+                    playerContainer.setPosition(ply.x, ply.y);
 
                     // Domyślna prędkość
                     // this.speed = 300;
@@ -911,8 +896,6 @@ export default class GameScene extends Phaser.Scene {
                 }
             }
         }
-
-        localStorage.setItem("reconnectionData", JSON.stringify({ mapName: this.mapName, playerId: this.playerId, players: this.players, x: this.player.x, y: this.player.y }));
 
         // Ensure countdown displays 0 before transitioning
         if (this.countdownText) {
