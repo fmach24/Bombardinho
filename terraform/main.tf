@@ -24,10 +24,6 @@ provider "aws" {
   region = var.aws_region
 }
 
-locals {
-  https_enabled = trimspace(var.acm_certificate_arn) != ""
-}
-
 # ─── Data sources ─────────────────────────────────────────────────────────────
 data "aws_availability_zones" "available" {
   state = "available"
@@ -83,13 +79,6 @@ resource "aws_security_group" "alb" {
   ingress {
     from_port   = 80
     to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port   = 443
-    to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -291,42 +280,10 @@ resource "aws_lb_target_group" "app" {
   tags = { Name = "${var.app_name}-tg" }
 }
 
-resource "aws_lb_listener" "http_forward" {
-  count             = local.https_enabled ? 0 : 1
+resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.main.arn
   port              = 80
   protocol          = "HTTP"
-
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.app.arn
-  }
-}
-
-resource "aws_lb_listener" "http_redirect" {
-  count             = local.https_enabled ? 1 : 0
-  load_balancer_arn = aws_lb.main.arn
-  port              = 80
-  protocol          = "HTTP"
-
-  default_action {
-    type = "redirect"
-
-    redirect {
-      port        = "443"
-      protocol    = "HTTPS"
-      status_code = "HTTP_301"
-    }
-  }
-}
-
-resource "aws_lb_listener" "https" {
-  count             = local.https_enabled ? 1 : 0
-  load_balancer_arn = aws_lb.main.arn
-  port              = 443
-  protocol          = "HTTPS"
-  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  certificate_arn   = var.acm_certificate_arn
 
   default_action {
     type             = "forward"
@@ -367,9 +324,5 @@ resource "aws_ecs_service" "app" {
     ignore_changes = [task_definition]
   }
 
-  depends_on = [
-    aws_lb_listener.http_forward,
-    aws_lb_listener.http_redirect,
-    aws_lb_listener.https
-  ]
+  depends_on = [aws_lb_listener.http]
 }
