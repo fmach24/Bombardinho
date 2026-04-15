@@ -21,3 +21,9 @@ variable "desired_count" {
   type        = number
   default     = 1
 }
+
+variable "acm_certificate_arn" {
+  description = "ACM certificate ARN for HTTPS on ALB. Leave empty to keep HTTP-only listener."
+  type        = string
+  default     = ""
+}

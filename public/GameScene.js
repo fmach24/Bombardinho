@@ -126,6 +126,7 @@ export default class GameScene extends Phaser.Scene {
         this.skin = data.players[this.playerId].skin || "default";
         console.log("Player skin:", this.skin);
         this.isDead = false; // Flaga czy gracz już umarł
+        this.isRoundEnding = false;
 
         // Tworzenie animacji powerupów i gracza
         this.createAnimations();
@@ -138,17 +139,161 @@ export default class GameScene extends Phaser.Scene {
         this.buildMap(data);
 
         //game network event handlers:
+        this.registerNetworkHandlers();
+        this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.unregisterNetworkHandlers());
+        this.events.once(Phaser.Scenes.Events.DESTROY, () => this.unregisterNetworkHandlers());
 
-        this.socket.on('spawnPowerup', (data) => { this.spawnPowerup(data); });
+    }
 
-        this.socket.on('destroyPowerup', (data) => { this.destroyPowerup(data); });
+    registerNetworkHandlers() {
+        this.unregisterNetworkHandlers();
 
-        this.socket.on('update', (data) => { this.updatePlayers(data); });
+        this.onSpawnPowerupHandler = (data) => { this.spawnPowerup(data); };
+        this.onDestroyPowerupHandler = (data) => { this.destroyPowerup(data); };
+        this.onUpdatePlayersHandler = (data) => { this.updatePlayers(data); };
+        this.onNewBombHandler = (data) => { this.newBomb(data); };
+        this.onExplosionDetailsHandler = (data) => { this.animateExplosion(data); };
+        this.onRoundEndedHandler = (data) => { this.handleRoundEnded(data); };
+        this.onRoundRestartHandler = (data) => { this.handleRoundRestart(data); };
 
-        this.socket.on('newBomb', (data) => { this.newBomb(data); });
+        this.socket.on('spawnPowerup', this.onSpawnPowerupHandler);
+        this.socket.on('destroyPowerup', this.onDestroyPowerupHandler);
+        this.socket.on('update', this.onUpdatePlayersHandler);
+        this.socket.on('newBomb', this.onNewBombHandler);
+        this.socket.on('explosionDetails', this.onExplosionDetailsHandler);
+        this.socket.on('roundEnded', this.onRoundEndedHandler);
+        this.socket.on('roundRestart', this.onRoundRestartHandler);
+    }
 
-        this.socket.on('explosionDetails', (data) => { this.animateExplosion(data); })
+    unregisterNetworkHandlers() {
+        if (!this.socket) {
+            return;
+        }
 
+        if (this.onSpawnPowerupHandler) {
+            this.socket.off('spawnPowerup', this.onSpawnPowerupHandler);
+        }
+        if (this.onDestroyPowerupHandler) {
+            this.socket.off('destroyPowerup', this.onDestroyPowerupHandler);
+        }
+        if (this.onUpdatePlayersHandler) {
+            this.socket.off('update', this.onUpdatePlayersHandler);
+        }
+        if (this.onNewBombHandler) {
+            this.socket.off('newBomb', this.onNewBombHandler);
+        }
+        if (this.onExplosionDetailsHandler) {
+            this.socket.off('explosionDetails', this.onExplosionDetailsHandler);
+        }
+        if (this.onRoundEndedHandler) {
+            this.socket.off('roundEnded', this.onRoundEndedHandler);
+        }
+        if (this.onRoundRestartHandler) {
+            this.socket.off('roundRestart', this.onRoundRestartHandler);
+        }
+    }
+
+    handleRoundEnded(data) {
+        this.isRoundEnding = true;
+
+        if (this.player?.body) {
+            this.player.body.setVelocity(0, 0);
+        }
+
+        const { winnerId, winnerNick, restartInMs } = data || {};
+        const restartSeconds = Math.max(1, Math.ceil((restartInMs || 0) / 1000));
+
+        if (this.roundEndOverlayElements) {
+            this.roundEndOverlayElements.forEach((element) => element.destroy());
+        }
+
+        const overlay = this.add.rectangle(
+            this.cameras.main.centerX,
+            this.cameras.main.centerY,
+            this.cameras.main.width,
+            this.cameras.main.height,
+            0x000000,
+            0.72
+        ).setScrollFactor(0).setDepth(1200);
+
+        const titleText = winnerId === this.playerId ? 'Round won!' : 'Round over';
+        const winnerText = winnerNick ? `Winner: ${winnerNick}` : 'No winner this round';
+
+        const title = this.add.text(
+            this.cameras.main.centerX,
+            this.cameras.main.centerY - 60,
+            titleText,
+            {
+                resolution: 30,
+                fontFamily: 'jersey',
+                fontSize: '72px',
+                color: '#ffffff'
+            }
+        ).setOrigin(0.5).setScrollFactor(0).setDepth(1201);
+
+        const winnerLabel = this.add.text(
+            this.cameras.main.centerX,
+            this.cameras.main.centerY,
+            winnerText,
+            {
+                resolution: 30,
+                fontFamily: 'jersey',
+                fontSize: '30px',
+                color: '#ffd27f'
+            }
+        ).setOrigin(0.5).setScrollFactor(0).setDepth(1201);
+
+        this.roundRestartCountdown = this.add.text(
+            this.cameras.main.centerX,
+            this.cameras.main.centerY + 60,
+            `Next round in ${restartSeconds}s`,
+            {
+                resolution: 30,
+                fontFamily: 'jersey',
+                fontSize: '30px',
+                color: '#ffffff'
+            }
+        ).setOrigin(0.5).setScrollFactor(0).setDepth(1201);
+
+        this.roundEndOverlayElements = [overlay, title, winnerLabel, this.roundRestartCountdown];
+
+        if (this.roundRestartTimerEvent) {
+            this.roundRestartTimerEvent.remove(false);
+        }
+
+        let leftSeconds = restartSeconds;
+        this.roundRestartTimerEvent = this.time.addEvent({
+            delay: 1000,
+            loop: true,
+            callback: () => {
+                leftSeconds--;
+                if (!this.roundRestartCountdown || leftSeconds < 0) {
+                    return;
+                }
+                this.roundRestartCountdown.setText(`Next round in ${leftSeconds}s`);
+            }
+        });
+    }
+
+    handleRoundRestart(data) {
+        if (!data?.players || !data?.mapName) {
+            return;
+        }
+
+        if (this.roundRestartTimerEvent) {
+            this.roundRestartTimerEvent.remove(false);
+            this.roundRestartTimerEvent = null;
+        }
+
+        this.unregisterNetworkHandlers();
+
+        this.scene.restart({
+            players: data.players,
+            playerId: this.playerId,
+            socket: this.socket,
+            mapName: data.mapName,
+            reconnect: false
+        });
     }
 
     createAnimations() {
@@ -810,7 +955,7 @@ export default class GameScene extends Phaser.Scene {
     update() {
         let direction = null;
         // Jeśli gracz nie żyje, nie pozwól mu się ruszać
-        if (this.isDead) return;
+        if (this.isDead || this.isRoundEnding) return;
 
         // Sterowanie z historią wciśniętych klawiszy
         const cursors = this.input.keyboard.createCursorKeys();
