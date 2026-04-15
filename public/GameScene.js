@@ -483,7 +483,9 @@ export default class GameScene extends Phaser.Scene {
             hp_bar.name = this.HP_BAR_TAG;
 
             // Put sprite + text into a container
-            const player = this.add.container(spawnPoint.x, spawnPoint.y, [speedIndicatorSprite, slowIndicatorSprite, sprite, nickname, hp_bar, health_indicator]);
+            const startX = Number.isFinite(ply.x) ? ply.x : spawnPoint.x;
+            const startY = Number.isFinite(ply.y) ? ply.y : spawnPoint.y;
+            const player = this.add.container(startX, startY, [speedIndicatorSprite, slowIndicatorSprite, sprite, nickname, hp_bar, health_indicator]);
 
             // Enable physics on the container
             this.physics.world.enable(player);
@@ -724,8 +726,6 @@ export default class GameScene extends Phaser.Scene {
                 const hasSlowEffect = ply.slowEffectStamp >= Date.now();
                 //jesli to jest nasz gracz
                 if (ply.id == this.playerId) {
-                    playerContainer.setPosition(ply.x, ply.y);
-
                     // Domyślna prędkość
                     // this.speed = 300;
                     if (hasSpeedEffect) {
