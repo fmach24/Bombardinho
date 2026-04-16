@@ -49,7 +49,22 @@ The project includes:
 
 <img width="1918" height="1078" alt="image" src="https://github.com/user-attachments/assets/d5388a00-0e3a-4e29-99f4-4171272e55ea" />
 
-## Local Run
+## Access The Running Version
+
+The project is currently deployed and running in a containerized environment.
+
+Live endpoint:
+
+- http://bombardinho-alb-1678769276.eu-central-1.elb.amazonaws.com
+
+Use the active deployment URL (for example ALB DNS from Terraform outputs) instead of starting it locally.
+
+If needed, you can read the deployed endpoint with:
+
+1. cd terraform
+2. terraform output alb_dns_name
+
+## Local Development (Optional)
 
 ### Requirements
 
