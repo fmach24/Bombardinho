@@ -1,136 +1,145 @@
-# 💣 Bombardinho - Online Multiplayer Bomberman
+# Bombardinho
 
-A modern, web-based multiplayer Bomberman game built with Node.js, Socket.IO, and Phaser 3. Experience classic Bomberman gameplay with friends in real-time!
+Real-time multiplayer Bomberman-style browser game built with Node.js, Express, Socket.IO, and Phaser 3.
 
 ![Players](https://img.shields.io/badge/Players-2--4-blue)
 ![Platform](https://img.shields.io/badge/Platform-Web-orange)
+![Runtime](https://img.shields.io/badge/Node-20.x-green)
+![Infra](https://img.shields.io/badge/AWS-ECS%20Fargate-FF9900)
 
-## 🎮 Features
+## Overview
 
-### Core Gameplay
-- **Real-time multiplayer** for 2-4 players
-- **Classic Bomberman mechanics** with bombs, explosions, and powerups
-- **Multiple character skins**: Bombardinho, Filipek, and Guczo
+Bombardinho is a fast-paced multiplayer arena game for 2 to 4 players.
+Players join a lobby, vote for maps, choose skins, place bombs, collect power-ups, and try to survive the longest.
 
-### Power-ups System
-- 🏃 **Speed Boost** - Temporary movement speed increase (7.5s)
-- 🐌 **Slow Potion** - Slows down all other players (10s)
-- 💣 **Extra Bombs** - Additional bomb charges (max 5)
-- ❤️ **Health** - Restore HP (max 4)
+The project includes:
+
+- a Socket.IO game server with server-side state updates,
+- a Phaser 3 browser client,
+- Docker containerization for production runtime,
+- Terraform infrastructure for AWS,
+- GitHub Actions pipeline for build and deploy.
+
+## Core Gameplay Features
+
+- Real-time multiplayer for 2 to 4 players.
+- Bomb placement with timed detonation.
+- Explosion range blocked by walls.
+- Power-up spawn and pickup system.
+- Health system and player elimination.
+- Map voting from lobby preferences.
+- Reconnection using session identifiers and grace timeout.
+
+### Power-ups
+
+- Speed boost.
+- Slow effect for opponents.
+- Extra bomb charges.
+- Health restore.
 
 ### Maps
-Choose from multiple themed battlegrounds:
-- 🏖️ **Beach Map**
-- ⛏️ **Gold Mine**
-- 🇵🇹 **Portugal Map**
 
-### Game Mechanics
-- **Smart bomb placement** with grid-based positioning
-- **Explosion range system** with wall collision detection
-- **Player collision detection** for accurate hit registration
-- **Automatic powerup spawning** (max 5 active at once)
-- **Reconnection support** for dropped connections
+- Beach
+- Gold Mine
+- Portugal
 
-### Screenshots
+## Screenshots
+
 <img width="1918" height="1078" alt="image" src="https://github.com/user-attachments/assets/1e864143-cb33-4e1f-be4b-72eb7f7ff303" />
 
 <img width="1918" height="1078" alt="image" src="https://github.com/user-attachments/assets/d5388a00-0e3a-4e29-99f4-4171272e55ea" />
 
-## 🚀 Quick Start
+## Local Run
 
-### Prerequisites
-- Node.js (v14 or higher)
-- npm or yarn
+### Requirements
 
-### Installation
+- Node.js 20+
+- npm
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/fmach24/Bombardinho.git
-   cd Bombardinho
-   ```
+### Start
 
-2. **Install dependencies**
-   ```bash
-   npm install
-   ```
+1. Clone repository.
+2. Install dependencies.
+3. Run server.
+4. Open browser at http://localhost:5678.
 
-3. **Start the server**
-   ```bash
-   node server.js
-   ```
+Commands:
 
-4. **Open your browser**
-   Navigate to `http://localhost:5678`
+1. git clone https://github.com/fmach24/Bombardinho.git
+2. cd Bombardinho
+3. npm install
+4. node server.js
 
-## 🎯 How to Play
+## Docker
 
-### Controls
-- **Arrow Keys** (↑ ↓ ← →) - Move your character
-- **SPACE** - Place bomb
+Production image uses a multi-stage build and runs as a non-root user.
 
-### Objective
-Be the last player standing! Use bombs strategically to eliminate opponents while collecting power-ups to gain advantages.
+Build and run:
 
-### Tips
-- 💡 Bombs explode after 2.5 seconds
-- 💡 Collect power-ups to gain temporary advantages
-- 💡 Use walls strategically for cover
-- 💡 Watch your HP - you can take multiple hits!
+1. docker build -t bombardinho .
+2. docker run --rm -p 5678:5678 bombardinho
 
-## 🛠️ Technical Stack
+## Cloud Deployment (AWS)
 
-### Backend
-- **Node.js** with Express.js
-- **Socket.IO** for real-time communication
-- **UUID** for unique player identification
+Terraform provisions:
 
-### Frontend
-- **Phaser 3** game framework
-- **HTML5 Canvas** for rendering
-- **CSS3** for UI styling
-- **WebSocket** for real-time updates
+- VPC + internet gateway + public subnets,
+- security groups for ALB and ECS tasks,
+- ECR repository,
+- ECS cluster, task definition, and service (Fargate),
+- ALB + target group with sticky sessions,
+- CloudWatch log group,
+- IAM roles for ECS task execution and task runtime.
 
-### Assets
-- Custom pixel art animations
-- Tiled map editor integration (@rpgjs/tiled)
-- Multiple character sprites and animations
+Outputs include ALB DNS and ECS/ECR identifiers for CI/CD integration.
 
-## 🏗️ Project Structure
+## CI/CD (GitHub Actions)
 
-```
+Workflow on push to main:
+
+1. Syntax check for server code.
+2. Build Docker image.
+3. Push image to ECR with commit SHA tag.
+4. Render ECS task definition with new image.
+5. Deploy to ECS service and wait for stability.
+
+Required repository secrets:
+
+- AWS_ACCESS_KEY_ID
+- AWS_SECRET_ACCESS_KEY
+- AWS_REGION
+- ECR_REPOSITORY_URL
+- ECS_CLUSTER_NAME
+- ECS_SERVICE_NAME
+- ECS_TASK_FAMILY (optional, fallback: bombardinho)
+
+## Project Structure
+
 Bombardinho/
-├── server.js              # Main server file
-├── package.json           # Dependencies and scripts
-├── public/                # Client-side files
-│   ├── index.html        # Main HTML page
-│   ├── index.js          # Game initialization
-│   ├── GameScene.js      # Main game logic
-│   ├── LobbyScene.js     # Lobby and matchmaking
-│   ├── NetworkManager.js # Client-server communication
-│   ├── styles.css        # Game styling
-│   └── assets/           # Game assets
-│       ├── animations/   # Character sprites
-│       ├── fonts/        # Custom fonts
-│       └── *.tmj         # Tiled map files
-└── README.md
-```
+- server.js
+- Dockerfile
+- package.json
+- .github/workflows/deploy.yml
+- terraform/
+  - main.tf
+  - variables.tf
+  - outputs.tf
+- public/
+  - index.html
+  - index.js
+  - LobbyScene.js
+  - GameScene.js
+  - NetworkManager.js
+  - styles.css
+  - assets/
 
-## 🔧 Configuration
+## Current Notes
 
-### Server Settings
-```javascript
-const REQUIRED_PLAYERS = 2;    // Minimum players to start
-const DETONATION_TIME = 2500;  // Bomb timer (ms)
-const HP_MAX = 3;              // Starting health
-const MAX_ACTIVE_POWERUPS = 5; // Max powerups on map
-```
+- Server has health endpoint at /health for ECS/ALB checks.
+- Sticky sessions are enabled in ALB target group to keep WebSocket affinity.
+- For production browsers, use HTTPS at the edge/proxy layer to avoid cookie policy warnings for ALB CORS cookie variants.
 
-### Network
-- Default port: `5678`
-- Supports local network play (`0.0.0.0`)
+## Acknowledgments
 
-## 🎉 Acknowledgments
-
-- Inspired by the classic Bomberman series and Party Time with Winnie the Pooh
-- Thanks to the Phaser.js and Tiled communities
+- Inspired by Bomberman-style gameplay.
+- Built with Phaser and Socket.IO communities documentation.
