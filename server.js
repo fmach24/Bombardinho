@@ -12,7 +12,7 @@ app.get("/health", (_req, res) => {
     res.status(200).json({ status: "ok" });
 });
 
-const REQUIRED_PLAYERS = 2;
+const REQUIRED_PLAYERS = 3;
 const MAX_PLAYERS = 4;
 const DETONATION_TIME = 2.5 * 1000;
 const STANDARD_RANGE = 2;
