@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: bombardinho
+  annotations:
+    # Akamai NodeBalancer sticky sessions — required for Socket.IO without Redis adapter
+    service.beta.kubernetes.io/linode-loadbalancer-session-stickiness: "table"
+    service.beta.kubernetes.io/linode-loadbalancer-session-stickiness-timeout: "10800"
+    # Health check
+    service.beta.kubernetes.io/linode-loadbalancer-check: "http"
+    service.beta.kubernetes.io/linode-loadbalancer-check-path: "/"
+    service.beta.kubernetes.io/linode-loadbalancer-check-interval: "30"
+    service.beta.kubernetes.io/linode-loadbalancer-check-attempts: "3"
+    service.beta.kubernetes.io/linode-loadbalancer-check-timeout: "5"
+spec:
+  type: LoadBalancer   # Akamai LKE automatycznie tworzy NodeBalancer
+  selector:
+    app: bombardinho
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 5678

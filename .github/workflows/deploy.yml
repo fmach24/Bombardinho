@@ -1,34 +1,64 @@
-name: Build & Deploy to ECS
+# .github/workflows/deploy.yml
+#
+# Pipeline: push to main
+#   → build Docker image
+#   → push to AWS ECR (for ECS)
+#   → push to ghcr.io  (for LKE)
+#   → deploy to AWS ECS Fargate
+#   → deploy to Akamai LKE
+#
+# Required GitHub Secrets:
+#   AWS_ACCESS_KEY_ID         — IAM user key
+#   AWS_SECRET_ACCESS_KEY     — IAM user secret
+#   AWS_REGION                — e.g. eu-central-1
+#   ECR_REPOSITORY_URL        — from terraform output
+#   ECS_CLUSTER_NAME          — from terraform output
+#   ECS_SERVICE_NAME          — from terraform output
+#   AKAMAI_KUBECONFIG         — base64-encoded LKE kubeconfig (see guide)
+
+name: Build & Deploy
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
-concurrency:
-  group: ecs-deploy-main
-  cancel-in-progress: false
-
 env:
-  AWS_REGION:       ${{ secrets.AWS_REGION }}
-  ECR_REPO:         ${{ secrets.ECR_REPOSITORY_URL }}
-  ECS_CLUSTER:      ${{ secrets.ECS_CLUSTER_NAME }}
-  ECS_SERVICE:      ${{ secrets.ECS_SERVICE_NAME }}
-  ECS_TASK_FAMILY:  ${{ secrets.ECS_TASK_FAMILY || 'bombardinho' }}
+  AWS_REGION:    ${{ secrets.AWS_REGION }}
+  ECR_REPO:      ${{ secrets.ECR_REPOSITORY_URL }}
+  ECS_CLUSTER:   ${{ secrets.ECS_CLUSTER_NAME }}
+  ECS_SERVICE:   ${{ secrets.ECS_SERVICE_NAME }}
+  GHCR_IMAGE:    ghcr.io/${{ github.repository_owner }}/bombardinho
 
 jobs:
+  # ── Job 1: Lint ─────────────────────────────────────────────────────────────
   lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check syntax
-        run: node --check server.js
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: node --check server.js
 
+  # ── Job 2: Build & push do ECR + ghcr.io ────────────────────────────────────
   build-and-push:
+    name: Build & Push
     runs-on: ubuntu-latest
     needs: lint
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-ecr:  ${{ steps.meta.outputs.image-ecr }}
+      image-ghcr: ${{ steps.meta.outputs.image-ghcr }}
+
     steps:
       - uses: actions/checkout@v4
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -37,19 +67,44 @@ jobs:
           aws-region:            ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and push
-        run: |
-          # Budujemy obraz i tagujemy go SHAm commita
-          IMAGE_TAG="${{ github.sha }}"
-          docker build -t "${{ env.ECR_REPO }}:${IMAGE_TAG}" .
-          docker push "${{ env.ECR_REPO }}:${IMAGE_TAG}"
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-  deploy:
+      - name: Build and push to both registries
+        id: meta
+        run: |
+          TAG="${{ github.sha }}"
+          ECR_IMAGE="${{ env.ECR_REPO }}:${TAG}"
+          GHCR_IMAGE="${{ env.GHCR_IMAGE }}:${TAG}"
+
+          docker build \
+            -t "$ECR_IMAGE" \
+            -t "${{ env.ECR_REPO }}:latest" \
+            -t "$GHCR_IMAGE" \
+            -t "${{ env.GHCR_IMAGE }}:latest" \
+            .
+
+          docker push "$ECR_IMAGE"
+          docker push "${{ env.ECR_REPO }}:latest"
+          docker push "$GHCR_IMAGE"
+          docker push "${{ env.GHCR_IMAGE }}:latest"
+
+          echo "image-ecr=${ECR_IMAGE}"   >> "$GITHUB_OUTPUT"
+          echo "image-ghcr=${GHCR_IMAGE}" >> "$GITHUB_OUTPUT"
+
+  # ── Job 3: Deploy to AWS ECS ─────────────────────────────────────────────────
+  deploy-ecs:
+    name: Deploy → ECS Fargate
     runs-on: ubuntu-latest
     needs: build-and-push
+    environment: production
+
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -58,23 +113,76 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ env.AWS_REGION }}
 
-      - name: Download task definition
+      - name: Update ECS service
         run: |
-          aws ecs describe-task-definition --task-definition "${{ env.ECS_TASK_FAMILY }}" --query taskDefinition > task-definition.json
+          TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition bombardinho \
+            --query taskDefinition)
 
-      - name: Fill in the new image ID
-        id: task-def
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: task-definition.json
-          container-name: bombardinho
-          # Składamy nazwę obrazu ręcznie tutaj, żeby ominąć błąd "Skip output"
-          image: ${{ env.ECR_REPO }}:${{ github.sha }}
+          NEW_TASK_DEF=$(echo "$TASK_DEF" | jq \
+            --arg IMAGE "${{ needs.build-and-push.outputs.image-ecr }}" \
+            '.containerDefinitions[0].image = $IMAGE |
+             del(.taskDefinitionArn, .revision, .status,
+                 .requiresAttributes, .compatibilities,
+                 .registeredAt, .registeredBy)')
 
-      - name: Deploy to ECS
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+          NEW_TASK_ARN=$(aws ecs register-task-definition \
+            --cli-input-json "$NEW_TASK_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          aws ecs update-service \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --service "${{ env.ECS_SERVICE }}" \
+            --task-definition "$NEW_TASK_ARN" \
+            --force-new-deployment
+
+      - name: Wait for ECS stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --services "${{ env.ECS_SERVICE }}"
+          echo "✅ ECS deployment complete"
+
+  # ── Job 4: Deploy to Akamai LKE ──────────────────────────────────────────────
+  deploy-lke:
+    name: Deploy → Akamai LKE
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
         with:
-          task-definition: ${{ steps.task-def.outputs.task-definition }}
-          service: ${{ env.ECS_SERVICE }}
-          cluster: ${{ env.ECS_CLUSTER }}
-          wait-for-service-stability: true
+          version: "latest"
+
+      - name: Configure kubeconfig for LKE
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.AKAMAI_KUBECONFIG }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Apply Kubernetes manifests
+        run: |
+          kubectl apply -f k8s/deployment.yml
+          kubectl apply -f k8s/service.yml
+
+      - name: Roll out new image
+        run: |
+          kubectl set image deployment/bombardinho \
+            bombardinho=${{ needs.build-and-push.outputs.image-ghcr }}
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/bombardinho --timeout=120s
+          echo "✅ LKE deployment complete"
+
+      - name: Print NodeBalancer IP
+        run: |
+          echo "## ☁️ Akamai LKE" >> "$GITHUB_STEP_SUMMARY"
+          kubectl get service bombardinho \
+            -o jsonpath='IP: {.status.loadBalancer.ingress[0].ip}' \
+            >> "$GITHUB_STEP_SUMMARY" || true
