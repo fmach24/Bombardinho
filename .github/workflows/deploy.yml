@@ -1,21 +1,3 @@
-# .github/workflows/deploy.yml
-#
-# Pipeline: push to main
-#   → build Docker image
-#   → push to AWS ECR (for ECS)
-#   → push to ghcr.io  (for LKE)
-#   → deploy to AWS ECS Fargate
-#   → deploy to Akamai LKE
-#
-# Required GitHub Secrets:
-#   AWS_ACCESS_KEY_ID         — IAM user key
-#   AWS_SECRET_ACCESS_KEY     — IAM user secret
-#   AWS_REGION                — e.g. eu-central-1
-#   ECR_REPOSITORY_URL        — from terraform output
-#   ECS_CLUSTER_NAME          — from terraform output
-#   ECS_SERVICE_NAME          — from terraform output
-#   AKAMAI_KUBECONFIG         — base64-encoded LKE kubeconfig (see guide)
-
 name: Build & Deploy
 
 on:
@@ -31,7 +13,6 @@ env:
   GHCR_IMAGE:    ghcr.io/${{ github.repository_owner }}/bombardinho
 
 jobs:
-  # ── Job 1: Lint ─────────────────────────────────────────────────────────────
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -44,7 +25,6 @@ jobs:
       - run: npm ci
       - run: node --check server.js
 
-  # ── Job 2: Build & push do ECR + ghcr.io ────────────────────────────────────
   build-and-push:
     name: Build & Push
     runs-on: ubuntu-latest
@@ -52,9 +32,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    outputs:
-      image-ecr:  ${{ steps.meta.outputs.image-ecr }}
-      image-ghcr: ${{ steps.meta.outputs.image-ghcr }}
 
     steps:
       - uses: actions/checkout@v4
@@ -87,27 +64,16 @@ jobs:
             .
 
       - name: Push to AWS ECR
-        id: meta
         run: |
-          TAG="${{ github.sha }}"
-          ECR_IMAGE="${{ env.ECR_REPO }}:${TAG}"
-          GHCR_IMAGE="${{ env.GHCR_IMAGE }}:${TAG}"
-
-          docker push "$ECR_IMAGE"
+          docker push "${{ env.ECR_REPO }}:${{ github.sha }}"
           docker push "${{ env.ECR_REPO }}:latest"
 
-          # Set outputs immediately after ECR push succeeds
-          echo "image-ecr=${ECR_IMAGE}"   >> "$GITHUB_OUTPUT"
-          echo "image-ghcr=${GHCR_IMAGE}" >> "$GITHUB_OUTPUT"
-
       - name: Push to GitHub Container Registry
-        continue-on-error: true   # ghcr failure won't block ECS deployment
+        continue-on-error: true
         run: |
-          TAG="${{ github.sha }}"
-          docker push "${{ env.GHCR_IMAGE }}:${TAG}"
+          docker push "${{ env.GHCR_IMAGE }}:${{ github.sha }}"
           docker push "${{ env.GHCR_IMAGE }}:latest"
 
-  # ── Job 3: Deploy to AWS ECS ─────────────────────────────────────────────────
   deploy-ecs:
     name: Deploy → ECS Fargate
     runs-on: ubuntu-latest
@@ -124,12 +90,14 @@ jobs:
 
       - name: Update ECS service
         run: |
+          ECR_IMAGE="${{ secrets.ECR_REPOSITORY_URL }}:${{ github.sha }}"
+
           TASK_DEF=$(aws ecs describe-task-definition \
             --task-definition bombardinho \
             --query taskDefinition)
 
           NEW_TASK_DEF=$(echo "$TASK_DEF" | jq \
-            --arg IMAGE "${{ needs.build-and-push.outputs.image-ecr }}" \
+            --arg IMAGE "$ECR_IMAGE" \
             '.containerDefinitions[0].image = $IMAGE |
              del(.taskDefinitionArn, .revision, .status,
                  .requiresAttributes, .compatibilities,
@@ -153,7 +121,6 @@ jobs:
             --services "${{ env.ECS_SERVICE }}"
           echo "✅ ECS deployment complete"
 
-  # ── Job 4: Deploy to Akamai LKE ──────────────────────────────────────────────
   deploy-lke:
     name: Deploy → Akamai LKE
     runs-on: ubuntu-latest
@@ -182,7 +149,7 @@ jobs:
       - name: Roll out new image
         run: |
           kubectl set image deployment/bombardinho \
-            bombardinho=${{ needs.build-and-push.outputs.image-ghcr }}
+            bombardinho=${{ env.GHCR_IMAGE }}:${{ github.sha }}
 
       - name: Wait for rollout
         run: |
