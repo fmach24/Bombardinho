@@ -76,27 +76,36 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push to both registries
+      - name: Build image
+        run: |
+          TAG="${{ github.sha }}"
+          docker build \
+            -t "${{ env.ECR_REPO }}:${TAG}" \
+            -t "${{ env.ECR_REPO }}:latest" \
+            -t "${{ env.GHCR_IMAGE }}:${TAG}" \
+            -t "${{ env.GHCR_IMAGE }}:latest" \
+            .
+
+      - name: Push to AWS ECR
         id: meta
         run: |
           TAG="${{ github.sha }}"
           ECR_IMAGE="${{ env.ECR_REPO }}:${TAG}"
           GHCR_IMAGE="${{ env.GHCR_IMAGE }}:${TAG}"
 
-          docker build \
-            -t "$ECR_IMAGE" \
-            -t "${{ env.ECR_REPO }}:latest" \
-            -t "$GHCR_IMAGE" \
-            -t "${{ env.GHCR_IMAGE }}:latest" \
-            .
-
           docker push "$ECR_IMAGE"
           docker push "${{ env.ECR_REPO }}:latest"
-          docker push "$GHCR_IMAGE"
-          docker push "${{ env.GHCR_IMAGE }}:latest"
 
+          # Set outputs immediately after ECR push succeeds
           echo "image-ecr=${ECR_IMAGE}"   >> "$GITHUB_OUTPUT"
           echo "image-ghcr=${GHCR_IMAGE}" >> "$GITHUB_OUTPUT"
+
+      - name: Push to GitHub Container Registry
+        continue-on-error: true   # ghcr failure won't block ECS deployment
+        run: |
+          TAG="${{ github.sha }}"
+          docker push "${{ env.GHCR_IMAGE }}:${TAG}"
+          docker push "${{ env.GHCR_IMAGE }}:latest"
 
   # ── Job 3: Deploy to AWS ECS ─────────────────────────────────────────────────
   deploy-ecs:
