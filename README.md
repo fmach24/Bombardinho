@@ -6,6 +6,7 @@ Real-time multiplayer Bomberman-style browser game built with Node.js, Express, 
 ![Platform](https://img.shields.io/badge/Platform-Web-orange)
 ![Runtime](https://img.shields.io/badge/Node-20.x-green)
 ![Infra](https://img.shields.io/badge/AWS-ECS%20Fargate-FF9900)
+![Akamai](https://img.shields.io/badge/Akamai-LKE%20Kubernetes-009BDE)
 
 ## Overview
 
@@ -18,7 +19,8 @@ The project includes:
 - a Phaser 3 browser client,
 - Docker containerization for production runtime,
 - Terraform infrastructure for AWS,
-- GitHub Actions pipeline for build and deploy.
+- Kubernetes manifests for Akamai LKE,
+- GitHub Actions pipeline for build and deploy to both platforms.
 
 ## Core Gameplay Features
 
@@ -51,18 +53,16 @@ The project includes:
 
 ## Access The Running Version
 
-The project is currently deployed and running in a containerized environment.
+The project is deployed to two independent cloud platforms from a single GitHub Actions pipeline.
 
-Live endpoint:
+Live endpoints:
 
-- http://bombardinho-alb-1678769276.eu-central-1.elb.amazonaws.com
+- **Akamai LKE (Kubernetes, Frankfurt)** — always on, via NodeBalancer public IP. Get the IP with:
+  - kubectl get service bombardinho
+- **AWS ECS Fargate (eu-central-1)** — can be paused to save costs. Get the DNS with:
+  - cd terraform && terraform output alb_dns_name
 
-Use the active deployment URL (for example ALB DNS from Terraform outputs) instead of starting it locally.
-
-If needed, you can read the deployed endpoint with:
-
-1. cd terraform
-2. terraform output alb_dns_name
+The AWS deployment can be started or stopped without destroying infrastructure using the manual GitHub Actions workflows: **Start app** and **Stop app** (scales ECS desired count between 0 and 1).
 
 ## Local Development (Optional)
 
@@ -108,15 +108,26 @@ Terraform provisions:
 
 Outputs include ALB DNS and ECS/ECR identifiers for CI/CD integration.
 
+## Cloud Deployment (Akamai LKE)
+
+Kubernetes manifests in k8s/ provision:
+
+- Deployment with readiness and liveness probes,
+- LoadBalancer Service that automatically provisions an Akamai NodeBalancer.
+
+NodeBalancer is configured in TCP mode (layer 4) to pass WebSocket upgrade headers transparently. HTTP mode (layer 7) was found to drop the Socket.IO handshake. Sticky sessions use the NodeBalancer session table to preserve in-memory Socket.IO state.
+
+Images are distributed via GitHub Container Registry (ghcr.io) since Akamai LKE does not have access to AWS ECR.
+
 ## CI/CD (GitHub Actions)
 
 Workflow on push to main:
 
 1. Syntax check for server code.
 2. Build Docker image.
-3. Push image to ECR with commit SHA tag.
-4. Render ECS task definition with new image.
-5. Deploy to ECS service and wait for stability.
+3. Push image to ECR (for ECS) and ghcr.io (for LKE) with commit SHA tag.
+4. Deploy to ECS: render task definition with new image, update service, wait for stability.
+5. Deploy to LKE: apply manifests, run kubectl set image, wait for rollout.
 
 Required repository secrets:
 
@@ -126,7 +137,7 @@ Required repository secrets:
 - ECR_REPOSITORY_URL
 - ECS_CLUSTER_NAME
 - ECS_SERVICE_NAME
-- ECS_TASK_FAMILY (optional, fallback: bombardinho)
+- AKAMAI_KUBECONFIG (base64-encoded LKE kubeconfig)
 
 ## Monitoring
 
@@ -145,6 +156,12 @@ Monitoring stack is provided via Docker Compose:
   - http://localhost:9090
 4. Open Grafana:
   - http://localhost:3000 (admin / admin)
+5. Add data source in Grafana:
+  - Connections → Data sources → Add data source → Prometheus
+  - URL: http://prometheus:9090
+  - Save & test
+6. Create dashboard:
+  - Dashboards → New → New dashboard → Add visualization
 
 ### Exposed Metrics
 
@@ -180,11 +197,18 @@ Bombardinho/
 - server.js
 - Dockerfile
 - package.json
+- docker-compose.monitoring.yml
+- prometheus.yml
 - .github/workflows/deploy.yml
+- .github/workflows/start.yml
+- .github/workflows/stop.yml
 - terraform/
   - main.tf
   - variables.tf
   - outputs.tf
+- k8s/
+  - deployment.yml
+  - service.yml
 - public/
   - index.html
   - index.js
@@ -197,7 +221,8 @@ Bombardinho/
 ## Current Notes
 
 - Server has health endpoint at /health for ECS/ALB checks.
-- Sticky sessions are enabled in ALB target group to keep WebSocket affinity.
+- Sticky sessions are enabled on both platforms: ALB target group (cookie-based) and Akamai NodeBalancer (session table).
+- NodeBalancer operates in TCP mode to allow WebSocket upgrade passthrough.
 - For production browsers, use HTTPS at the edge/proxy layer to avoid cookie policy warnings for ALB CORS cookie variants.
 
 ## Acknowledgments
