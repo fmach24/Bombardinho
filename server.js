@@ -1,5 +1,6 @@
 import express from "express";
 import http from "http";
+import client from "prom-client";
 import { Server } from "socket.io";
 import { v4 as uuidv4 } from "uuid";
 
@@ -7,9 +8,35 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
+const register = new client.Registry();
+client.collectDefaultMetrics({ register });
+
+const activePlayers = new client.Gauge({
+    name: "bombardinho_active_players",
+    help: "Number of currently connected players",
+    registers: [register]
+});
+
+const activeGames = new client.Gauge({
+    name: "bombardinho_active_games",
+    help: "Number of games currently in progress",
+    registers: [register]
+});
+
+const bombsPlaced = new client.Counter({
+    name: "bombardinho_bombs_placed_total",
+    help: "Total number of bombs placed since server start",
+    registers: [register]
+});
+
 app.use(express.static("public"));
 app.get("/health", (_req, res) => {
     res.status(200).json({ status: "ok" });
+});
+
+app.get("/metrics", async (_req, res) => {
+    res.set("Content-Type", register.contentType);
+    res.end(await register.metrics());
 });
 
 const REQUIRED_PLAYERS = 2;
@@ -53,6 +80,14 @@ function toMapIndex(value, gridSize) {
 
 function getConnectedPlayerIds() {
     return [...new Set(Object.values(sockets).map((state) => state.id))];
+}
+
+function updateActivePlayersMetric() {
+    activePlayers.set(getConnectedPlayerIds().length);
+}
+
+function updateActiveGamesMetric() {
+    activeGames.set(gameStarted ? 1 : 0);
 }
 
 function stopPowerupTimer() {
@@ -122,6 +157,7 @@ function resetGameState() {
     map = null;
     mapCreatedBy.clear();
     stopPowerupTimer();
+    updateActiveGamesMetric();
 }
 
 function removePlayer(playerId) {
@@ -173,6 +209,7 @@ function startMatchIfReady() {
     });
 
     gameStarted = true;
+    updateActiveGamesMetric();
     mapCreatedBy.clear();
     currentActivePowerups = 0;
     map = null;
@@ -261,6 +298,8 @@ io.on("connection", (socket) => {
             id: playerId,
             sessionId
         };
+
+        updateActivePlayersMetric();
 
         socket.emit("sessionAssigned", {
             sessionId,
@@ -353,6 +392,7 @@ io.on("connection", (socket) => {
         }
 
         delete sockets[socket.id];
+        updateActivePlayersMetric();
         const disconnectedPlayerId = disconnectedSocket.id;
 
         if (disconnectTimers[disconnectedPlayerId]) {
@@ -505,6 +545,7 @@ io.on("connection", (socket) => {
             };
 
             map[gridY][gridX].bomb = bomb;
+            bombsPlaced.inc();
 
             if (players[ply.id].bonusCharges > 0) {
                 players[ply.id].bonusCharges--;
@@ -522,5 +563,7 @@ io.on("connection", (socket) => {
 });
 
 server.listen(PORT, "0.0.0.0", () => {
+    updateActivePlayersMetric();
+    updateActiveGamesMetric();
     console.log(`Server listening on http://0.0.0.0:${PORT}`);
 });

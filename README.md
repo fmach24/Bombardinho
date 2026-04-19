@@ -128,6 +128,52 @@ Required repository secrets:
 - ECS_SERVICE_NAME
 - ECS_TASK_FAMILY (optional, fallback: bombardinho)
 
+## Monitoring
+
+Monitoring stack is provided via Docker Compose:
+
+- Prometheus for scraping metrics from the Node.js server,
+- Grafana for dashboard visualization.
+
+### Run Monitoring Locally
+
+1. Start app server:
+  - node server.js
+2. In another terminal start monitoring stack:
+  - docker compose -f docker-compose.monitoring.yml up
+3. Open Prometheus:
+  - http://localhost:9090
+4. Open Grafana:
+  - http://localhost:3000 (admin / admin)
+
+### Exposed Metrics
+
+Server now exposes Prometheus metrics at:
+
+- /metrics
+
+Custom game metrics:
+
+- bombardinho_active_players
+- bombardinho_active_games
+- bombardinho_bombs_placed_total
+
+### Grafana Dashboard
+
+Suggested dashboard title:
+
+- Bombardinho
+
+Suggested panels:
+
+- Active players (Stat): bombardinho_active_players
+- Active games (Stat): bombardinho_active_games
+- Bombs placed/min (Time series): rate(bombardinho_bombs_placed_total[1m]) * 60
+
+Example screenshot path in this repository:
+
+![Grafana dashboard](screenshots/grafana-dashboard.png)
+
 ## Project Structure
 
 Bombardinho/
