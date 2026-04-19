@@ -57,12 +57,10 @@ The project is deployed to two independent cloud platforms from a single GitHub 
 
 Live endpoints:
 
-- **Akamai LKE (Kubernetes, Frankfurt)** — always on, via NodeBalancer public IP. Get the IP with:
-  - kubectl get service bombardinho
-- **AWS ECS Fargate (eu-central-1)** — can be paused to save costs. Get the DNS with:
-  - cd terraform && terraform output alb_dns_name
-
-The AWS deployment can be started or stopped without destroying infrastructure using the manual GitHub Actions workflows: **Start app** and **Stop app** (scales ECS desired count between 0 and 1).
+- **Akamai LKE (Kubernetes, Frankfurt)** — always on, via NodeBalancer public IP.
+  - http://139.144.162.125/
+- **AWS ECS Fargate (eu-central-1)** — can be paused to save costs.
+  - http://bombardinho-alb-1678769276.eu-central-1.elb.amazonaws.com/
 
 ## Local Development (Optional)
 
@@ -110,14 +108,16 @@ Outputs include ALB DNS and ECS/ECR identifiers for CI/CD integration.
 
 ## Cloud Deployment (Akamai LKE)
 
-Kubernetes manifests in k8s/ provision:
+Kubernetes manifests in `k8s/` define:
 
-- Deployment with readiness and liveness probes,
-- LoadBalancer Service that automatically provisions an Akamai NodeBalancer.
+- Deployment (application pod with health probes),
+- Service type LoadBalancer (public entry point).
 
-NodeBalancer is configured in TCP mode (layer 4) to pass WebSocket upgrade headers transparently. HTTP mode (layer 7) was found to drop the Socket.IO handshake. Sticky sessions use the NodeBalancer session table to preserve in-memory Socket.IO state.
+Basic flow:
 
-Images are distributed via GitHub Container Registry (ghcr.io) since Akamai LKE does not have access to AWS ECR.
+- GitHub Actions builds one Docker image,
+- the same image is pushed to `ghcr.io`,
+- LKE pulls that image and updates the Deployment.
 
 ## CI/CD (GitHub Actions)
 
@@ -177,19 +177,13 @@ Custom game metrics:
 
 ### Grafana Dashboard
 
-Suggested dashboard title:
-
-- Bombardinho
-
 Suggested panels:
 
 - Active players (Stat): bombardinho_active_players
 - Active games (Stat): bombardinho_active_games
-- Bombs placed/min (Time series): rate(bombardinho_bombs_placed_total[1m]) * 60
+- Bombs placed/min (Time series): rate(bombardinho_bombs_placed_total[$__rate_interval]) * 60
 
-Example screenshot path in this repository:
-
-![Grafana dashboard](screenshots/grafana-dashboard.png)
+<img width="1920" height="1168" alt="Screenshot From 2026-04-19 19-05-37" src="https://github.com/user-attachments/assets/aceba554-b8e0-41d0-b8c7-cbd21f3fbd20" />
 
 ## Project Structure
 
@@ -222,8 +216,6 @@ Bombardinho/
 
 - Server has health endpoint at /health for ECS/ALB checks.
 - Sticky sessions are enabled on both platforms: ALB target group (cookie-based) and Akamai NodeBalancer (session table).
-- NodeBalancer operates in TCP mode to allow WebSocket upgrade passthrough.
-- For production browsers, use HTTPS at the edge/proxy layer to avoid cookie policy warnings for ALB CORS cookie variants.
 
 ## Acknowledgments
 
