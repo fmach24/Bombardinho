@@ -12,12 +12,14 @@ terraform {
     }
   }
 
-  # Optional: uncomment to store state remotely in S3
-  # backend "s3" {
-  #   bucket = "your-terraform-state-bucket"
-  #   key    = "bombardinho/terraform.tfstate"
-  #   region = var.aws_region
-  # }
+  #Storing state remotely in S3
+
+  backend "s3" {
+     bucket = "bombardinho-state-bucket"
+     key    = "bombardinho/terraform.tfstate"
+     region = "eu-central-1"
+     encrypt = true
+   }
 }
 
 provider "aws" {

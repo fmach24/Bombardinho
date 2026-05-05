@@ -2,5 +2,5 @@
 terraform/.terraform/
 *.tfstate
 *.tfstate.backup
-.terraform.lock.hcl
 node_modules/
+terraform/*.tfplan
