@@ -110,14 +110,18 @@ Outputs include ALB DNS and ECS/ECR identifiers for CI/CD integration.
 
 Kubernetes manifests in `k8s/` define:
 
-- Deployment (application pod with health probes),
-- Service type LoadBalancer (public entry point).
+- the game Deployment with health probes,
+- the public Service for the game,
+- a separate monitoring stack for Prometheus and Grafana.
+
+Monitoring runs only on Akamai LKE. AWS keeps using CloudWatch for infrastructure and application logs.
 
 Basic flow:
 
 - GitHub Actions builds one Docker image,
 - the same image is pushed to `ghcr.io`,
-- LKE pulls that image and updates the Deployment.
+- LKE pulls that image and updates the Deployment,
+- the workflow also applies the monitoring manifests in the `monitoring` namespace.
 
 ## CI/CD (GitHub Actions)
 
@@ -141,10 +145,11 @@ Required repository secrets:
 
 ## Monitoring
 
-Monitoring stack is provided via Docker Compose:
+Monitoring for production runs on Akamai LKE:
 
-- Prometheus for scraping metrics from the Node.js server,
-- Grafana for dashboard visualization.
+- Prometheus scrapes the Node.js `/metrics` endpoint,
+- Grafana visualizes those metrics,
+- Grafana uses the `AKAMAI_GRAFANA_ADMIN_PASSWORD` GitHub secret when the workflow creates the Kubernetes Secret.
 
 ### Run Monitoring Locally
 

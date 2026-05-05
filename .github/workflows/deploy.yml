@@ -58,21 +58,17 @@ jobs:
           TAG="${{ github.sha }}"
           docker build \
             -t "${{ env.ECR_REPO }}:${TAG}" \
-            -t "${{ env.ECR_REPO }}:latest" \
             -t "${{ env.GHCR_IMAGE }}:${TAG}" \
-            -t "${{ env.GHCR_IMAGE }}:latest" \
             .
 
       - name: Push to AWS ECR
         run: |
           docker push "${{ env.ECR_REPO }}:${{ github.sha }}"
-          docker push "${{ env.ECR_REPO }}:latest"
 
       - name: Push to GitHub Container Registry
         continue-on-error: true
         run: |
           docker push "${{ env.GHCR_IMAGE }}:${{ github.sha }}"
-          docker push "${{ env.GHCR_IMAGE }}:latest"
 
   deploy-ecs:
     name: Deploy → ECS Fargate
@@ -90,7 +86,15 @@ jobs:
 
       - name: Update ECS service
         run: |
-          ECR_IMAGE="${{ secrets.ECR_REPOSITORY_URL }}:${{ github.sha }}"
+          ECR_IMAGE="${{ env.ECR_REPO }}:${{ github.sha }}"
+          ECR_REPO_NAME="${{ env.ECR_REPO }}"
+          ECR_REPO_NAME="${ECR_REPO_NAME##*/}"
+
+          # Fail early if the commit-tagged image is not available in ECR.
+          aws ecr describe-images \
+            --repository-name "$ECR_REPO_NAME" \
+            --image-ids imageTag="${{ github.sha }}" \
+            --region "${{ env.AWS_REGION }}" > /dev/null
 
           TASK_DEF=$(aws ecs describe-task-definition \
             --task-definition bombardinho \
@@ -142,7 +146,19 @@ jobs:
           chmod 600 ~/.kube/config
 
       - name: Apply Kubernetes manifests
+        env:
+          AKAMAI_GRAFANA_ADMIN_PASSWORD: ${{ secrets.AKAMAI_GRAFANA_ADMIN_PASSWORD }}
         run: |
+          kubectl apply -f k8s/monitoring/namespace.yml
+          kubectl create secret generic grafana-admin-secret \
+            --namespace monitoring \
+            --from-literal=admin-password="$AKAMAI_GRAFANA_ADMIN_PASSWORD" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply -f k8s/monitoring/prometheus-config.yml
+          kubectl apply -f k8s/monitoring/prometheus.yml
+          kubectl apply -f k8s/monitoring/prometheus-service.yml
+          kubectl apply -f k8s/monitoring/grafana.yml
+          kubectl apply -f k8s/monitoring/grafana-service.yml
           kubectl apply -f k8s/deployment.yml
           kubectl apply -f k8s/service.yml
 
