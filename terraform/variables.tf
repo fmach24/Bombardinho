@@ -21,3 +21,9 @@ variable "desired_count" {
   type        = number
   default     = 1
 }
+
+variable "image_tag" {
+  description = "Optional image tag for ECS task. CI should provide commit SHA. If empty, no explicit tag is appended."
+  type        = string
+  default     = ""
+}
